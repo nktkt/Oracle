@@ -29,9 +29,12 @@ type ValidationPayload struct {
 
 type OutputPayload struct {
 	DataPoints      int                `json:"data_points"`
+	Lag             int                `json:"lag"`
 	TrainingMSE     float64            `json:"training_mse"`
 	ResidualStdDev  float64            `json:"residual_std_dev"`
 	LastObserved    float64            `json:"last_observed"`
+	ModelLoadedFrom string             `json:"model_loaded_from,omitempty"`
+	ModelSavedTo    string             `json:"model_saved_to,omitempty"`
 	Validation      *ValidationPayload `json:"validation,omitempty"`
 	Forecast        []ForecastPoint    `json:"forecast"`
 	ForecastCSVPath string             `json:"forecast_csv_path,omitempty"`
@@ -39,21 +42,25 @@ type OutputPayload struct {
 
 func main() {
 	var (
-		dataPath     string
-		outPath      string
-		outputFormat string
-		steps        int
-		lag          int
-		hidden       int
-		epochs       int
-		holdout      int
-		seed         int64
-		lr           float64
+		dataPath      string
+		outPath       string
+		outputFormat  string
+		saveModelPath string
+		loadModelPath string
+		steps         int
+		lag           int
+		hidden        int
+		epochs        int
+		holdout       int
+		seed          int64
+		lr            float64
 	)
 
 	flag.StringVar(&dataPath, "data", "data/sample.csv", "path to time-series data file")
 	flag.StringVar(&outPath, "out", "", "optional CSV output path for forecasts")
 	flag.StringVar(&outputFormat, "format", "text", "output format: text or json")
+	flag.StringVar(&saveModelPath, "save-model", "", "optional path to save trained model JSON")
+	flag.StringVar(&loadModelPath, "load-model", "", "optional path to load model JSON and skip training")
 	flag.IntVar(&steps, "steps", 5, "number of future points to predict")
 	flag.IntVar(&lag, "lag", 6, "number of past points used for one prediction")
 	flag.IntVar(&hidden, "hidden", 12, "hidden layer size")
@@ -81,32 +88,61 @@ func main() {
 		Seed:         seed,
 	}
 
-	trainSeries := series
-	if holdout > 0 {
-		if holdout >= len(series) {
-			log.Fatalf("invalid -holdout: %d (must be smaller than data length %d)", holdout, len(series))
-		}
-		trainSeries = series[:len(series)-holdout]
-	}
+	var (
+		result      *oracle.TrainResult
+		validation  *oracle.ValidationMetrics
+		modelLoaded string
+		modelSaved  string
+	)
 
-	result, err := oracle.Train(trainSeries, cfg)
-	if err != nil {
-		log.Fatalf("training failed: %v", err)
-	}
-
-	var validation *oracle.ValidationMetrics
-	if holdout > 0 {
-		metrics, validateErr := oracle.Validate(result, series, holdout)
-		if validateErr != nil {
-			log.Fatalf("validation failed: %v", validateErr)
-		}
-		validation = &metrics
-
-		// Retrain on full data so future forecasts use all observed points.
-		result, err = oracle.Train(series, cfg)
+	if loadModelPath != "" {
+		result, err = oracle.LoadModel(loadModelPath)
 		if err != nil {
-			log.Fatalf("full-data retraining failed: %v", err)
+			log.Fatalf("loading model failed: %v", err)
 		}
+		modelLoaded = loadModelPath
+
+		if holdout > 0 {
+			metrics, validateErr := oracle.Validate(result, series, holdout)
+			if validateErr != nil {
+				log.Fatalf("validation failed: %v", validateErr)
+			}
+			validation = &metrics
+		}
+	} else {
+		trainSeries := series
+		if holdout > 0 {
+			if holdout >= len(series) {
+				log.Fatalf("invalid -holdout: %d (must be smaller than data length %d)", holdout, len(series))
+			}
+			trainSeries = series[:len(series)-holdout]
+		}
+
+		result, err = oracle.Train(trainSeries, cfg)
+		if err != nil {
+			log.Fatalf("training failed: %v", err)
+		}
+
+		if holdout > 0 {
+			metrics, validateErr := oracle.Validate(result, series, holdout)
+			if validateErr != nil {
+				log.Fatalf("validation failed: %v", validateErr)
+			}
+			validation = &metrics
+
+			// Retrain on full data so future forecasts use all observed points.
+			result, err = oracle.Train(series, cfg)
+			if err != nil {
+				log.Fatalf("full-data retraining failed: %v", err)
+			}
+		}
+	}
+
+	if saveModelPath != "" {
+		if err := oracle.SaveModel(saveModelPath, result); err != nil {
+			log.Fatalf("saving model failed: %v", err)
+		}
+		modelSaved = saveModelPath
 	}
 
 	predictions, err := oracle.Forecast(result, series, steps)
@@ -125,9 +161,12 @@ func main() {
 	if outputFormat == "json" {
 		payload := OutputPayload{
 			DataPoints:      len(series),
+			Lag:             result.Lag,
 			TrainingMSE:     result.MSE,
 			ResidualStdDev:  result.ResidualStdDev,
 			LastObserved:    series[len(series)-1],
+			ModelLoadedFrom: modelLoaded,
+			ModelSavedTo:    modelSaved,
 			Forecast:        points,
 			ForecastCSVPath: outPath,
 		}
@@ -149,9 +188,16 @@ func main() {
 
 	fmt.Println("Oracle - Future Forecast")
 	fmt.Printf("Data points      : %d\n", len(series))
+	fmt.Printf("Lag              : %d\n", result.Lag)
 	fmt.Printf("Training MSE     : %.6f\n", result.MSE)
 	fmt.Printf("Residual Std Dev : %.6f\n", result.ResidualStdDev)
 	fmt.Printf("Last observed    : %.4f\n", series[len(series)-1])
+	if modelLoaded != "" {
+		fmt.Printf("Model loaded     : %s\n", modelLoaded)
+	}
+	if modelSaved != "" {
+		fmt.Printf("Model saved      : %s\n", modelSaved)
+	}
 	if validation != nil {
 		fmt.Println()
 		fmt.Printf("Holdout points   : %d\n", validation.Count)

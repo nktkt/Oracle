@@ -11,6 +11,7 @@
 - ホールドアウト検証（MAE/RMSE/MAPE）
 - JSON形式での結果出力
 - 予測結果CSVの保存
+- 学習済みモデルの保存/再利用（JSON）
 
 ## 実行方法
 
@@ -28,6 +29,18 @@ go run . -data data/sample.csv -steps 5 -holdout 6
 
 ```bash
 go run . -data data/sample.csv -steps 5 -format json -out forecast.csv
+```
+
+### モデル保存
+
+```bash
+go run . -data data/sample.csv -steps 5 -save-model model/oracle_v1.json
+```
+
+### 保存済みモデルで即予測（再学習なし）
+
+```bash
+go run . -data data/sample.csv -steps 8 -load-model model/oracle_v1.json -format json
 ```
 
 ## 入力データ形式
@@ -52,6 +65,10 @@ go run . -data data/sample.csv -steps 5 -format json -out forecast.csv
 - `-seed`: 乱数シード
 - `-format`: `text` または `json`
 - `-out`: 予測結果CSVの保存先（省略時は保存しない）
+- `-save-model`: 学習済みモデルをJSON保存
+- `-load-model`: 保存済みモデルJSONを読み込み（学習をスキップ）
+
+`-load-model` を使う場合、`-lag` / `-hidden` / `-epochs` / `-lr` / `-seed` は読み込んだモデル値が優先されます。
 
 ## テスト
 
