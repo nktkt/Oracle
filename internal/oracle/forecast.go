@@ -22,6 +22,13 @@ type TrainResult struct {
 	ResidualStdDev float64
 }
 
+type ValidationMetrics struct {
+	Count int
+	MAE   float64
+	RMSE  float64
+	MAPE  float64
+}
+
 func Train(series []float64, cfg TrainConfig) (*TrainResult, error) {
 	if len(series) < 6 {
 		return nil, fmt.Errorf("series too short: need at least 6 points")
@@ -138,6 +145,67 @@ func Forecast(result *TrainResult, observed []float64, steps int) ([]float64, er
 	}
 
 	return predictions, nil
+}
+
+// Validate performs one-step-ahead validation on the last `holdout` points.
+// The model is asked to predict each next point from the current history,
+// then history is advanced with the actual observed value.
+func Validate(result *TrainResult, series []float64, holdout int) (ValidationMetrics, error) {
+	metrics := ValidationMetrics{}
+	if result == nil || result.Model == nil {
+		return metrics, fmt.Errorf("invalid train result")
+	}
+	if holdout <= 0 {
+		return metrics, fmt.Errorf("holdout must be positive")
+	}
+	if len(series) <= holdout {
+		return metrics, fmt.Errorf("series length must be larger than holdout")
+	}
+
+	trainEnd := len(series) - holdout
+	if trainEnd < result.Lag {
+		return metrics, fmt.Errorf("training segment shorter than lag")
+	}
+
+	history := append([]float64(nil), series[:trainEnd]...)
+	sumAbs := 0.0
+	sumSq := 0.0
+	sumPct := 0.0
+	pctCount := 0
+
+	for i := trainEnd; i < len(series); i++ {
+		start := len(history) - result.Lag
+		window := history[start:]
+		normalizedWindow := result.Scaler.TransformSlice(window)
+
+		nextNorm, err := result.Model.Predict(normalizedWindow)
+		if err != nil {
+			return metrics, err
+		}
+
+		predicted := result.Scaler.Inverse(nextNorm)
+		actual := series[i]
+		diff := actual - predicted
+		absDiff := math.Abs(diff)
+
+		sumAbs += absDiff
+		sumSq += diff * diff
+		if math.Abs(actual) > 1e-9 {
+			sumPct += absDiff / math.Abs(actual)
+			pctCount++
+		}
+
+		history = append(history, actual)
+	}
+
+	metrics.Count = holdout
+	metrics.MAE = sumAbs / float64(holdout)
+	metrics.RMSE = math.Sqrt(sumSq / float64(holdout))
+	if pctCount > 0 {
+		metrics.MAPE = 100 * (sumPct / float64(pctCount))
+	}
+
+	return metrics, nil
 }
 
 func makeWindows(series []float64, lag int) ([][]float64, []float64) {
